@@ -223,15 +223,9 @@ static inline std::wstring unicode_wstring_from_utf8(const std::string & s) {
 static std::vector<std::string> unicode_byte_encoding_process(const std::vector<std::string> & bpe_words) {
     std::vector<std::string> bpe_encoded_words;
     for (const auto & word : bpe_words) {
-        std::string text_utf;
-        auto utf_word =  unicode_cpts_from_utf8(word);
-        for (size_t i = 0; i < utf_word.size(); ++i) {
-            text_utf += unicode_cpt_to_utf8(utf_word[i]);
-        }
-
         std::string encoded_token;
-        for (char & c : text_utf) {
-            encoded_token += unicode_byte_to_utf8(c);
+        for (size_t i = 0; i < word.size(); ++i) {
+            encoded_token += unicode_byte_to_utf8(static_cast<uint8_t>(word[i]));
         }
         bpe_encoded_words.emplace_back(encoded_token);
     }
@@ -597,10 +591,10 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string 
             const auto flags = _get_flags(pos);
 
             // Pattern 1: [\p{Han}]+ (Chinese characters)
+            // For Kimi-K2, we split each Han character individually to allow proper BPE lookup
             if (unicode_cpt_is_han(cpt)) {
-                while (unicode_cpt_is_han(_get_cpt(pos))) {
-                    pos++;
-                }
+                // Add each Han character as a separate token
+                pos++;
                 _add_token(pos);
                 continue;
             }

@@ -601,7 +601,9 @@ struct llm_tokenizer_bpe_session {
 
                 if (token == LLAMA_TOKEN_NULL) {
                     for (auto j = str.begin(); j != str.end(); ++j) {
-                        std::string byte_str(1, *j);
+                        // For BPE tokenizers using GPT-2 style byte encoding,
+                        // convert raw bytes to their unicode representation
+                        std::string byte_str = unicode_byte_to_utf8(static_cast<uint8_t>(*j));
                         auto token_multibyte = vocab.text_to_token(byte_str);
                         if (token_multibyte != LLAMA_TOKEN_NULL) {
                             output.push_back(token_multibyte);
