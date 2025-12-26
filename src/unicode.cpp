@@ -550,6 +550,9 @@ static std::vector<size_t> unicode_regex_split_stl(const std::string & text, con
 
     return bpe_offsets;
 }
+static bool unicode_cpt_should_split_individually(uint32_t cpt) {
+    return cpt > 0x7F;
+}
 
 // K2 system regex patterns (from tokenization_kimi.py):
 // [\p{Han}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
@@ -591,21 +594,22 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string 
             const auto flags = _get_flags(pos);
 
             // Pattern 1: [\p{Han}]+ (Chinese characters)
-            // For Kimi-K2, we split each Han character individually to allow proper BPE lookup
-            if (unicode_cpt_is_han(cpt)) {
-                // Add each Han character as a separate token
+            // Extended to also handle Japanese Kana and Korean Hangul
+            // For Kimi-K2, we split each CJK/Japanese/Korean character individually to allow proper BPE lookup
+            if (unicode_cpt_should_split_individually(cpt)) {
+                // Add each character as a separate token
                 pos++;
                 _add_token(pos);
                 continue;
             }
 
-            // Pattern 2 & 3: Letter words excluding Han characters with optional contractions
+            // Pattern 2 & 3: Letter words excluding Han/Japanese/Korean characters with optional contractions
             // [^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?:'s|'t|'re|'ve|'m|'ll|'d)?
             // [^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?:'s|'t|'re|'ve|'m|'ll|'d)?
             // Check if current char is a letter OR if current char could be a leading char and next char is a letter
-            bool is_letter_pattern = (flags.is_letter && !unicode_cpt_is_han(cpt)) ||
+            bool is_letter_pattern = (flags.is_letter && !unicode_cpt_should_split_individually(cpt)) ||
                                      (!(cpt == '\r' || cpt == '\n' || flags.is_letter || flags.is_number) &&
-                                      _get_flags(pos + 1).is_letter && !unicode_cpt_is_han(_get_cpt(pos + 1)));
+                                      _get_flags(pos + 1).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos + 1)));
 
             if (is_letter_pattern) {
                 // Handle optional leading non-letter/non-number character
@@ -615,19 +619,19 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string 
                     pos++;
                 }
 
-                // Match letter sequence (excluding Han characters)
+                // Match letter sequence (excluding CJK/Japanese/Korean characters)
                 bool has_letters = false;
-                while (_get_flags(pos).is_letter && !unicode_cpt_is_han(_get_cpt(pos))) {
+                while (_get_flags(pos).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos))) {
                     has_letters = true;
                     pos++;
                 }
 
                 // Only proceed if we found letters (after potentially skipping leading char)
-                if (has_letters || (!has_leading_char && _get_flags(pos).is_letter && !unicode_cpt_is_han(_get_cpt(pos)))) {
+                if (has_letters || (!has_leading_char && _get_flags(pos).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos)))) {
                     if (!has_letters) pos++; // consume the first letter if we didn't already
 
                     // Continue consuming letters
-                    while (_get_flags(pos).is_letter && !unicode_cpt_is_han(_get_cpt(pos))) {
+                    while (_get_flags(pos).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos))) {
                         pos++;
                     }
 
