@@ -223,9 +223,15 @@ static inline std::wstring unicode_wstring_from_utf8(const std::string & s) {
 static std::vector<std::string> unicode_byte_encoding_process(const std::vector<std::string> & bpe_words) {
     std::vector<std::string> bpe_encoded_words;
     for (const auto & word : bpe_words) {
+        std::string text_utf;
+        auto utf_word =  unicode_cpts_from_utf8(word);
+        for (size_t i = 0; i < utf_word.size(); ++i) {
+            text_utf += unicode_cpt_to_utf8(utf_word[i]);
+        }
+
         std::string encoded_token;
-        for (size_t i = 0; i < word.size(); ++i) {
-            encoded_token += unicode_byte_to_utf8(static_cast<uint8_t>(word[i]));
+        for (char & c : text_utf) {
+            encoded_token += unicode_byte_to_utf8(c);
         }
         bpe_encoded_words.emplace_back(encoded_token);
     }
@@ -550,9 +556,6 @@ static std::vector<size_t> unicode_regex_split_stl(const std::string & text, con
 
     return bpe_offsets;
 }
-static bool unicode_cpt_should_split_individually(uint32_t cpt) {
-    return cpt > 0x7F;
-}
 
 // K2 system regex patterns (from tokenization_kimi.py):
 // [\p{Han}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
@@ -594,22 +597,21 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string 
             const auto flags = _get_flags(pos);
 
             // Pattern 1: [\p{Han}]+ (Chinese characters)
-            // Extended to also handle Japanese Kana and Korean Hangul
-            // For Kimi-K2, we split each CJK/Japanese/Korean character individually to allow proper BPE lookup
-            if (unicode_cpt_should_split_individually(cpt)) {
-                // Add each character as a separate token
-                pos++;
+            if (unicode_cpt_is_han(cpt)) {
+                while (unicode_cpt_is_han(_get_cpt(pos))) {
+                    pos++;
+                }
                 _add_token(pos);
                 continue;
             }
 
-            // Pattern 2 & 3: Letter words excluding Han/Japanese/Korean characters with optional contractions
+            // Pattern 2 & 3: Letter words excluding Han characters with optional contractions
             // [^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?:'s|'t|'re|'ve|'m|'ll|'d)?
             // [^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?:'s|'t|'re|'ve|'m|'ll|'d)?
             // Check if current char is a letter OR if current char could be a leading char and next char is a letter
-            bool is_letter_pattern = (flags.is_letter && !unicode_cpt_should_split_individually(cpt)) ||
+            bool is_letter_pattern = (flags.is_letter && !unicode_cpt_is_han(cpt)) ||
                                      (!(cpt == '\r' || cpt == '\n' || flags.is_letter || flags.is_number) &&
-                                      _get_flags(pos + 1).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos + 1)));
+                                      _get_flags(pos + 1).is_letter && !unicode_cpt_is_han(_get_cpt(pos + 1)));
 
             if (is_letter_pattern) {
                 // Handle optional leading non-letter/non-number character
@@ -619,19 +621,19 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string 
                     pos++;
                 }
 
-                // Match letter sequence (excluding CJK/Japanese/Korean characters)
+                // Match letter sequence (excluding Han characters)
                 bool has_letters = false;
-                while (_get_flags(pos).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos))) {
+                while (_get_flags(pos).is_letter && !unicode_cpt_is_han(_get_cpt(pos))) {
                     has_letters = true;
                     pos++;
                 }
 
                 // Only proceed if we found letters (after potentially skipping leading char)
-                if (has_letters || (!has_leading_char && _get_flags(pos).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos)))) {
+                if (has_letters || (!has_leading_char && _get_flags(pos).is_letter && !unicode_cpt_is_han(_get_cpt(pos)))) {
                     if (!has_letters) pos++; // consume the first letter if we didn't already
 
                     // Continue consuming letters
-                    while (_get_flags(pos).is_letter && !unicode_cpt_should_split_individually(_get_cpt(pos))) {
+                    while (_get_flags(pos).is_letter && !unicode_cpt_is_han(_get_cpt(pos))) {
                         pos++;
                     }
 
@@ -727,80 +729,6 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string 
     return bpe_offsets;
 }
 
-// AFMOE digit handling: splits digits with leading 1-2 based on total length modulo 3
-static std::vector<size_t> unicode_regex_split_custom_afmoe(const std::string & text, const std::vector<size_t> & offsets) {
-    std::vector<size_t> bpe_offsets;
-    bpe_offsets.reserve(offsets.size());
-
-    const auto cpts = unicode_cpts_from_utf8(text);
-
-    size_t start = 0;
-    for (auto offset : offsets) {
-        const size_t offset_ini = start;
-        const size_t offset_end = start + offset;
-        assert(offset_end <= cpts.size());
-        start = offset_end;
-
-        auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
-            return (offset_ini <= pos && pos < offset_end) ? unicode_cpt_flags_from_cpt(cpts[pos]) : unicode_cpt_flags{};
-        };
-
-        size_t _prev_end = offset_ini;
-        auto _add_token = [&] (const size_t end) -> size_t {
-            assert(_prev_end <= end && end <= offset_end);
-            size_t len = end - _prev_end;
-            if (len > 0) {
-                bpe_offsets.push_back(len);
-            }
-            _prev_end = end;
-            return len;
-        };
-
-        for (size_t pos = offset_ini; pos < offset_end; ) {
-            const auto flags = _get_flags(pos);
-
-            // Handle digit sequences with special splitting logic
-            if (flags.is_number) {
-                size_t digit_start = pos;
-                size_t digit_count = 0;
-
-                // Count consecutive digits
-                while (_get_flags(pos).is_number && pos < offset_end) {
-                    digit_count++;
-                    pos++;
-                }
-
-                // Split based on total length modulo 3
-                size_t remainder = digit_count % 3;
-                size_t current = digit_start;
-
-                // Emit leading 1-2 digits if needed
-                if (remainder > 0) {
-                    _add_token(current + remainder);
-                    current += remainder;
-                }
-
-                // Emit groups of 3
-                while (current < digit_start + digit_count) {
-                    _add_token(current + 3);
-                    current += 3;
-                }
-                continue;
-            }
-
-            // For non-digits, just move forward
-            pos++;
-        }
-
-        // Add any remaining content
-        if (_prev_end < offset_end) {
-            _add_token(offset_end);
-        }
-    }
-
-    return bpe_offsets;
-}
-
 static std::vector<size_t> unicode_regex_split_custom(const std::string & text, const std::string & regex_expr, const std::vector<size_t> & offsets) {
     std::vector<size_t> bpe_offsets;
 
@@ -814,9 +742,6 @@ static std::vector<size_t> unicode_regex_split_custom(const std::string & text, 
     } else if (regex_expr == "\\p{Han}+") {
         // K2's first pattern - handle all K2 patterns together
         bpe_offsets = unicode_regex_split_custom_kimi_k2(text, offsets);
-    } else if (regex_expr == "\\p{AFMoE_digits}") {
-        // AFMOE digit pattern - use custom implementation for proper splitting
-        bpe_offsets = unicode_regex_split_custom_afmoe(text, offsets);
     }
 
     return bpe_offsets;
